@@ -16,6 +16,7 @@ groovydoc.enabled = false
 dependencies {
 	compile gradleApi()
 	compile 'com.google.guava:guava:18.0'
+    compile 'org.jgrapht:jgrapht-core:0.9.0'
 	compile 'org.anarres.qemu:qemu-exec:1.0.1'
 	compile fileTree(dir: '/usr/share/java', include: 'libguestfs-*.jar')
 }
