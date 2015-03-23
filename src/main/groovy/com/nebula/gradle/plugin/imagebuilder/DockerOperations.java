@@ -9,7 +9,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Preconditions;
-import com.google.common.base.Throwables;
 import com.google.common.io.Files;
 import com.redhat.et.libguestfs.LibGuestFSException;
 import java.io.ByteArrayOutputStream;
@@ -74,18 +73,11 @@ public class DockerOperations {
             LOG.debug("Creating new file: " + layer.getAbsolutePath());
             layer.createNewFile();
 
-            FileOutputStream fos = null;
-            try {
-                fos = new FileOutputStream(layer);
+            try (FileOutputStream fos = new FileOutputStream(layer)) {
                 for (DefaultEdge e : path.getEdgeList()) {
                     String target = graph.getEdgeTarget(e);
                     fos.write((target + "\n").getBytes());
                 }
-            } catch (IOException e) {
-                throw Throwables.propagate(e);
-            } finally {
-                if (fos != null)
-                    fos.close();
             }
         }
     }
@@ -128,20 +120,11 @@ public class DockerOperations {
             //Lets try to be somewhat efficient and write 128Kb writes
             createParentDirs(destFile);
 
-            FileOutputStream fout = null;
-            try {
-                fout = new FileOutputStream(destFile);
+            try (FileOutputStream fout = new FileOutputStream(destFile)) {
                 IOUtils.copy(inputStream, fout);
-            } catch (IOException e) {
-                throw Throwables.propagate(e);
-            } finally {
-                if (fout != null)
-                    fout.close();
             }
 
-            TarInputStream layerInputStream = null;
-            try {
-                layerInputStream = new TarInputStream(new FileInputStream(destFile));
+            try (TarInputStream layerInputStream = new TarInputStream(new FileInputStream(destFile))) {
                 //Unpack this in the current directory
 
                 TarEntry entry;
@@ -157,21 +140,10 @@ public class DockerOperations {
 
                     //Ensure the parent directories exist for this file
                     createParentDirs(out);
-                    try {
-                        fout = new FileOutputStream(out);
+                    try (FileOutputStream fout = new FileOutputStream(out)) {
                         IOUtils.copy(layerInputStream, fout);
-                    } catch (IOException e) {
-
-                    } finally {
-                        if (fout != null)
-                            fout.close();
                     }
                 }
-            } catch (IOException e) {
-                throw Throwables.propagate(e);
-            } finally {
-                if (layerInputStream != null)
-                    layerInputStream.close();
             }
         }
     }
@@ -185,10 +157,10 @@ public class DockerOperations {
             DirectedAcyclicGraph.CycleFoundException {
 
         ObjectMapper mapper = new ObjectMapper();
-        DirectedAcyclicGraph<String, DefaultEdge> root = new DirectedAcyclicGraph<String, DefaultEdge>(DefaultEdge.class);
+        DirectedAcyclicGraph<String, DefaultEdge> root = new DirectedAcyclicGraph<>(DefaultEdge.class);
 
-        Map<String, Object> tarRepositories = new HashMap<String, Object>();
-        Map<String, Object> existingRepositories = new HashMap<String, Object>();
+        Map<String, Object> tarRepositories = new HashMap<>();
+        Map<String, Object> existingRepositories = new HashMap<>();
 
         String treeRoot = "";
 
@@ -201,9 +173,7 @@ public class DockerOperations {
                 new TypeReference<Map<String, Object>>() {
                 });
 
-        TarInputStream inputStream = null;
-        try {
-            inputStream = new TarInputStream(new FileInputStream(src));
+        try (TarInputStream inputStream = new TarInputStream(new FileInputStream(src))) {
 
             TarEntry entry;
             //Loop over the tar image
@@ -221,8 +191,7 @@ public class DockerOperations {
 
                 if (name.endsWith("json")) {
                     //This is just so we can read the file and then throw it away.
-                    ByteArrayOutputStream tempOutputStream = new ByteArrayOutputStream();
-                    try {
+                    try (ByteArrayOutputStream tempOutputStream = new ByteArrayOutputStream()) {
                         IOUtils.copy(inputStream, tempOutputStream);
 
                         DockerJson value = mapper.readValue(tempOutputStream.toString(), DockerJson.class);
@@ -239,34 +208,20 @@ public class DockerOperations {
                             LOG.debug("Adding edge from " + value.id + " to " + value.parent);
                             root.addEdge(value.id, value.parent);
                         }
-                    } catch (IOException e) {
-                        throw Throwables.propagate(e);
-                    } finally {
-                        tempOutputStream.close();
                     }
                 }
                 if ("repositories".equals(name)) {
                     //Save this file for later so we can add all the images to it
-                    ByteArrayOutputStream tempOutputStream = new ByteArrayOutputStream();
-                    try {
+                    try (ByteArrayOutputStream tempOutputStream = new ByteArrayOutputStream()) {
                         IOUtils.copy(inputStream, tempOutputStream);
 
                         tarRepositories = mapper.readValue(tempOutputStream.toByteArray(),
                                 new TypeReference<Map<String, Object>>() {
                                 });
                         LOG.debug("Repositories: " + tarRepositories.toString());
-                    } catch (IOException e) {
-                        throw Throwables.propagate(e);
-                    } finally {
-                        tempOutputStream.close();
                     }
                 }
             }
-        } catch (IOException e) {
-            throw Throwables.propagate(e);
-        } finally {
-            if (inputStream != null)
-                inputStream.close();
         }
         if (treeRoot.isEmpty()) {
             throw new IllegalStateException("Root of docker container tree not found!");
