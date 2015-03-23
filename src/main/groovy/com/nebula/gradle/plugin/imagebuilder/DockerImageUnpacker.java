@@ -132,7 +132,8 @@ public class DockerImageUnpacker {
 
     private void unpackAufsDockerImage(
             @Nonnull File srcFile,
-            @Nonnull File dstDir)
+            @Nonnull File dstDir,
+            @Nonnull File existingRepositoryFile)
             throws LibGuestFSException,
             FileNotFoundException,
             IOException,
@@ -145,7 +146,7 @@ public class DockerImageUnpacker {
         String treeRoot = null;
 
         String existingRepoInfo = Files.toString(
-                new File(dstDir, "repositories-aufs"),
+                existingRepositoryFile, 
                 Charset.defaultCharset());
 
         Map<String, Object> existingRepositories = mapper.readValue(
@@ -205,6 +206,7 @@ public class DockerImageUnpacker {
             @Nonnull ImageTask.Context context,
             @Nonnull File srcFile,
             @Nonnull File dstDir,
+            @Nonnull File existingRepositoryFile,
             @Nonnull DockerStorageBackend backend)
             throws LibGuestFSException,
             IOException,
@@ -218,7 +220,7 @@ public class DockerImageUnpacker {
                 "Destination is not a directory: " + dstDir.getAbsolutePath());
         switch (backend) {
             case aufs:
-                unpackAufsDockerImage(srcFile, dstDir);
+                unpackAufsDockerImage(srcFile, dstDir, existingRepositoryFile);
                 break;
             default:
                 break;
@@ -229,6 +231,9 @@ public class DockerImageUnpacker {
             IOException, FileNotFoundException, DirectedAcyclicGraph.CycleFoundException {
         DockerImageUnpacker cephOperations = new DockerImageUnpacker();
         File tmpDir = Files.createTempDir();
-        cephOperations.unpackAufsDockerImage(new File("/home/chris/docker-image.tar"), tmpDir);
+        cephOperations.unpackAufsDockerImage(
+                new File("/home/chris/docker-image.tar"), 
+                new File("/tmp"),
+                new File("/tmp/repositories-aufs"));
     }
 }
