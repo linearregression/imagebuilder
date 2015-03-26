@@ -222,6 +222,6 @@ public class DockerImageUnpacker {
         cephOperations.unpackAufsDockerImage(
                 new File("/home/chris/docker-image.tar"), 
                 tmpDir,
-                new File("/tmp/repositories-aufs"));
+                new File(tmpDir, "repositories-aufs"));
     }
 }
