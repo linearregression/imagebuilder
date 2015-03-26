@@ -7,6 +7,7 @@ package com.nebula.gradle.plugin.imagebuilder;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.google.common.base.Preconditions;
 import com.google.common.io.ByteStreams;
 import com.google.common.io.Files;
@@ -15,19 +16,16 @@ import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.Charset;
-import java.nio.file.Path;
-import java.util.HashMap;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
-import java.util.Set;
+import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
 import org.apache.commons.io.FileUtils;
 import org.apache.tools.tar.TarEntry;
 import org.apache.tools.tar.TarInputStream;
 import org.jgrapht.DirectedGraph;
-import org.jgrapht.GraphPath;
 import org.jgrapht.alg.DijkstraShortestPath;
 import org.jgrapht.experimental.dag.DirectedAcyclicGraph;
 import org.jgrapht.graph.DefaultEdge;
@@ -41,7 +39,11 @@ import org.slf4j.LoggerFactory;
 public class DockerImageUnpacker {
 
     private static final Logger LOG = LoggerFactory.getLogger(DockerImageUnpacker.class);
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = new ObjectMapper() {
+        {
+            configure(SerializationFeature.INDENT_OUTPUT, true);
+        }
+    };
 
     public static enum DockerStorageBackend {
 
@@ -52,28 +54,16 @@ public class DockerImageUnpacker {
             @Nonnull DirectedGraph<String, DefaultEdge> graph,
             @Nonnull File layersDirectory,
             @Nonnull String root) throws IOException {
-        Set<String> vertexSet = graph.vertexSet();
-
-        for (String vertex : vertexSet) {
+        for (String vertex : graph.vertexSet()) {
             DijkstraShortestPath<String, DefaultEdge> dsp = new DijkstraShortestPath<>(graph, vertex, root);
-            GraphPath<String, DefaultEdge> path = dsp.getPath();
             File layer = new File(layersDirectory, vertex);
-
-            Path p = layer.toPath().getParent();
-            if (!p.toFile().exists()) {
-                LOG.debug("Creating parent directory: " + p.toString());
-                p.toFile().mkdirs();
+            Files.createParentDirs(layer);
+            StringBuilder buf = new StringBuilder();
+            for (DefaultEdge e : dsp.getPath().getEdgeList()) {
+                String target = graph.getEdgeTarget(e);
+                buf.append(target).append("\n");
             }
-
-            LOG.debug("Creating new file: " + layer.getAbsolutePath());
-            layer.createNewFile();
-
-            try (FileOutputStream fos = new FileOutputStream(layer)) {
-                for (DefaultEdge e : path.getEdgeList()) {
-                    String target = graph.getEdgeTarget(e);
-                    fos.write((target + "\n").getBytes());
-                }
-            }
+            Files.asCharSink(layer, StandardCharsets.ISO_8859_1).write(buf);
         }
     }
 
@@ -89,7 +79,7 @@ public class DockerImageUnpacker {
         //Overwrite that shit
         existingRepositories.putAll(repositoriesJson);
 
-        LOG.debug("Combined repositories: " + existingRepositories.toString());
+        LOG.debug("Combined repositories: " + existingRepositories);
 
         mapper.writeValue(dstFile, existingRepositories);
     }
@@ -130,7 +120,8 @@ public class DockerImageUnpacker {
         }
     }
 
-    private void unpackAufsDockerImage(
+    @CheckForNull
+    private Map<String, Object> unpackAufsDockerImage(
             @Nonnull File srcFile,
             @Nonnull File dstDir,
             @Nonnull File existingRepositoryFile)
@@ -139,20 +130,11 @@ public class DockerImageUnpacker {
             IOException,
             DirectedAcyclicGraph.CycleFoundException {
 
-        DirectedAcyclicGraph<String, DefaultEdge> root = new DirectedAcyclicGraph<>(DefaultEdge.class);
+        DirectedAcyclicGraph<String, DefaultEdge> layerGraph = new DirectedAcyclicGraph<>(DefaultEdge.class);
 
-        Map<String, Object> tarRepositories = new HashMap<>();
+        Map<String, Object> out = null;
 
         String treeRoot = null;
-
-        String existingRepoInfo = Files.toString(
-                existingRepositoryFile, 
-                Charset.defaultCharset());
-
-        Map<String, Object> existingRepositories = mapper.readValue(
-                existingRepoInfo,
-                new TypeReference<Map<String, Object>>() {
-                });
 
         try (FileInputStream in = FileUtils.openInputStream(srcFile)) {
             TarInputStream imageTarStream = new TarInputStream(new BufferedInputStream(in));
@@ -168,28 +150,24 @@ public class DockerImageUnpacker {
                 if (name.endsWith("/layer.tar")) {
                     unpackLayerEntry(imageTarStream, imageTarEntry, new File(dstDir, "diff"));
                 } else if (name.endsWith("/json")) {
-                    //This is just so we can read the file and then throw it away.
                     byte[] data = ByteStreams.toByteArray(imageTarStream);
-                    DockerTarballMetadata value = mapper.readValue(data, DockerTarballMetadata.class);
-                    if (value.parent == null) {
+                    DockerTarballMetadata layerMetadata = mapper.readValue(data, DockerTarballMetadata.class);
+                    LOG.info(name + " -> " + mapper.writeValueAsString(layerMetadata));
+                    if (layerMetadata.parent == null) {
                         //This is the root
-                        LOG.debug("Found root of tree: " + value.id);
-                        treeRoot = value.id;
-
-                        LOG.debug("Adding vertex: " + value.id);
-                        root.addVertex(value.id);
+                        treeRoot = layerMetadata.id;
+                        layerGraph.addVertex(layerMetadata.id);
                     } else {
-                        root.addVertex(value.parent);
-                        root.addVertex(value.id);
-                        LOG.debug("Adding edge from " + value.id + " to " + value.parent);
-                        root.addEdge(value.id, value.parent);
+                        layerGraph.addVertex(layerMetadata.parent);
+                        layerGraph.addVertex(layerMetadata.id);
+                        layerGraph.addEdge(layerMetadata.id, layerMetadata.parent);
                     }
                 } else if ("/repositories".equals(name)) {
                     //Save this file for later so we can add all the images to it
                     byte[] data = ByteStreams.toByteArray(imageTarStream);
-                    tarRepositories = mapper.readValue(data, new TypeReference<Map<String, Object>>() {
+                    out = mapper.readValue(data, new TypeReference<Map<String, Object>>() {
                     });
-                    LOG.debug("Repositories: " + tarRepositories.toString());
+                    LOG.info(name + " -> " + mapper.writeValueAsString(out));
                 }
             }
         }
@@ -198,8 +176,18 @@ public class DockerImageUnpacker {
             throw new IllegalStateException("Root of docker container tree not found!");
 
         //Save the RepositoriesJson file back out
-        createLayersFiles(root, new File(dstDir, "layers"), treeRoot);
-        saveRepositoriesFile(tarRepositories, existingRepositories, new File(dstDir, "repositories-new"));
+        createLayersFiles(layerGraph, new File(dstDir, "layers"), treeRoot);
+        if (out != null) {
+            String existingRepoInfo = Files.toString(
+                    existingRepositoryFile,
+                    Charset.defaultCharset());
+            Map<String, Object> existingRepositories = mapper.readValue(
+                    existingRepoInfo,
+                    new TypeReference<Map<String, Object>>() {
+                    });
+            saveRepositoriesFile(out, existingRepositories, new File(dstDir, "repositories-new"));
+        }
+        return out;
     }
 
     public void unpackDockerImage(
