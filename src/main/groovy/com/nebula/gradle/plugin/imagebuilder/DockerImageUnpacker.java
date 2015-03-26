@@ -5,13 +5,13 @@
  */
 package com.nebula.gradle.plugin.imagebuilder;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Preconditions;
+import com.google.common.io.ByteStreams;
 import com.google.common.io.Files;
 import com.redhat.et.libguestfs.LibGuestFSException;
-import java.io.ByteArrayOutputStream;
+import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nonnull;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.tools.tar.TarEntry;
 import org.apache.tools.tar.TarInputStream;
@@ -38,19 +39,13 @@ import org.slf4j.LoggerFactory;
  *
  * @author chris
  */
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class DockerOperations {
+public class DockerImageUnpacker {
 
-    private static final Logger LOG = LoggerFactory.getLogger(DockerOperations.class);
+    private static final Logger LOG = LoggerFactory.getLogger(DockerImageUnpacker.class);
 
-    public static enum DockerBackend {
+    public static enum DockerStorageBackend {
 
         aufs, btrfs, devicemapper, vfs
-    }
-
-    public static class Image {
-
-        String latest;
     }
 
     private void createLayersFiles(
@@ -60,7 +55,7 @@ public class DockerOperations {
         Set<String> vertexSet = graph.vertexSet();
 
         for (String vertex : vertexSet) {
-            DijkstraShortestPath dsp = new DijkstraShortestPath(graph, vertex, root);
+            DijkstraShortestPath<String, DefaultEdge> dsp = new DijkstraShortestPath<>(graph, vertex, root);
             GraphPath<String, DefaultEdge> path = dsp.getPath();
             File layer = new File(layersDirectory, vertex);
 
@@ -149,7 +144,7 @@ public class DockerOperations {
     }
 
     private void unpackAufsDockerImage(
-            @Nonnull File src,
+            @Nonnull File srcFile,
             @Nonnull File dstDir)
             throws LibGuestFSException,
             FileNotFoundException,
@@ -160,7 +155,6 @@ public class DockerOperations {
         DirectedAcyclicGraph<String, DefaultEdge> root = new DirectedAcyclicGraph<>(DefaultEdge.class);
 
         Map<String, Object> tarRepositories = new HashMap<>();
-        Map<String, Object> existingRepositories = new HashMap<>();
 
         String treeRoot = "";
 
@@ -168,58 +162,47 @@ public class DockerOperations {
                 new File("/tmp/repositories-aufs"),
                 Charset.defaultCharset());
 
-        existingRepositories = mapper.readValue(
+        Map<String, Object> existingRepositories = mapper.readValue(
                 existingRepoInfo,
                 new TypeReference<Map<String, Object>>() {
                 });
 
-        try (TarInputStream inputStream = new TarInputStream(new FileInputStream(src))) {
+        try (FileInputStream in = FileUtils.openInputStream(srcFile)) {
+            TarInputStream tarInputStream = new TarInputStream(new BufferedInputStream(in));
+            TarEntry tarEntry;
+            while ((tarEntry = tarInputStream.getNextEntry()) != null) {
+                /*
+                 117ee323aaa9d1b136ea55e4421f4ce413dfc6c0cc6b2186dea6c88d93e1ad7c/VERSION
+                 117ee323aaa9d1b136ea55e4421f4ce413dfc6c0cc6b2186dea6c88d93e1ad7c/json
+                 117ee323aaa9d1b136ea55e4421f4ce413dfc6c0cc6b2186dea6c88d93e1ad7c/layer.tar
+                 */
+                String name = tarEntry.getName();
 
-            TarEntry entry;
-            //Loop over the tar image
-            while ((entry = inputStream.getNextEntry()) != null) {
-                String name = entry.getName();
-
-                if (name.endsWith("layer.tar")) {
-                    /*
-                     117ee323aaa9d1b136ea55e4421f4ce413dfc6c0cc6b2186dea6c88d93e1ad7c/VERSION
-                     117ee323aaa9d1b136ea55e4421f4ce413dfc6c0cc6b2186dea6c88d93e1ad7c/json
-                     117ee323aaa9d1b136ea55e4421f4ce413dfc6c0cc6b2186dea6c88d93e1ad7c/layer.tar
-                     */
-                    unpackEntry(entry, new File(dstDir, "diff"), inputStream);
-                }
-
-                if (name.endsWith("json")) {
+                if (name.endsWith("/layer.tar")) {
+                    unpackEntry(tarEntry, new File(dstDir, "diff"), tarInputStream);
+                } else if (name.endsWith("/json")) {
                     //This is just so we can read the file and then throw it away.
-                    try (ByteArrayOutputStream tempOutputStream = new ByteArrayOutputStream()) {
-                        IOUtils.copy(inputStream, tempOutputStream);
+                    byte[] data = ByteStreams.toByteArray(tarInputStream);
+                    DockerTarballMetadata value = mapper.readValue(data, DockerTarballMetadata.class);
+                    if (value.parent == null) {
+                        //This is the root
+                        LOG.debug("Found root of tree: " + value.id);
+                        treeRoot = value.id;
 
-                        DockerJson value = mapper.readValue(tempOutputStream.toString(), DockerJson.class);
-                        if (value.parent == null) {
-                            //This is the root
-                            LOG.debug("Found root of tree: " + value.id);
-                            treeRoot = value.id;
-
-                            LOG.debug("Adding vertex: " + value.id);
-                            root.addVertex(value.id);
-                        } else {
-                            root.addVertex(value.parent);
-                            root.addVertex(value.id);
-                            LOG.debug("Adding edge from " + value.id + " to " + value.parent);
-                            root.addEdge(value.id, value.parent);
-                        }
+                        LOG.debug("Adding vertex: " + value.id);
+                        root.addVertex(value.id);
+                    } else {
+                        root.addVertex(value.parent);
+                        root.addVertex(value.id);
+                        LOG.debug("Adding edge from " + value.id + " to " + value.parent);
+                        root.addEdge(value.id, value.parent);
                     }
-                }
-                if ("repositories".equals(name)) {
+                } else if ("/repositories".equals(name)) {
                     //Save this file for later so we can add all the images to it
-                    try (ByteArrayOutputStream tempOutputStream = new ByteArrayOutputStream()) {
-                        IOUtils.copy(inputStream, tempOutputStream);
-
-                        tarRepositories = mapper.readValue(tempOutputStream.toByteArray(),
-                                new TypeReference<Map<String, Object>>() {
-                                });
-                        LOG.debug("Repositories: " + tarRepositories.toString());
-                    }
+                    byte[] data = ByteStreams.toByteArray(tarInputStream);
+                    tarRepositories = mapper.readValue(data, new TypeReference<Map<String, Object>>() {
+                    });
+                    LOG.debug("Repositories: " + tarRepositories.toString());
                 }
             }
         }
@@ -232,21 +215,25 @@ public class DockerOperations {
         saveRepositoriesFile(tarRepositories, existingRepositories, new File(dstDir, "repositories-new"));
     }
 
-    public void unpackDockerImage(ImageTask.Context context,
-            @Nonnull File src,
+    public void unpackDockerImage(
+            @Nonnull ImageTask.Context context,
+            @Nonnull File srcFile,
             @Nonnull File dstDir,
-            DockerBackend backend) throws LibGuestFSException,
-            IOException, FileNotFoundException,
+            @Nonnull DockerStorageBackend backend)
+            throws LibGuestFSException,
+            IOException,
+            FileNotFoundException,
             DirectedAcyclicGraph.CycleFoundException {
-        Preconditions.checkState(
-                src.exists(),
-                "Source file does not exist: " + src.getAbsolutePath());
-        Preconditions.checkState(
+        Preconditions.checkArgument(
+                srcFile.isFile(),
+                "Source is not a regular file: " + srcFile.getAbsolutePath());
+        Preconditions.checkArgument(
                 dstDir.isDirectory(),
                 "Destination is not a directory: " + dstDir.getAbsolutePath());
         switch (backend) {
             case aufs:
-                unpackAufsDockerImage(src, dstDir);
+                unpackAufsDockerImage(srcFile, dstDir);
+                break;
             default:
                 break;
         }
@@ -254,7 +241,7 @@ public class DockerOperations {
 
     public static void main(String[] args) throws LibGuestFSException,
             IOException, FileNotFoundException, DirectedAcyclicGraph.CycleFoundException {
-        DockerOperations cephOperations = new DockerOperations();
+        DockerImageUnpacker cephOperations = new DockerImageUnpacker();
         cephOperations.unpackAufsDockerImage(new File("/home/chris/docker-image.tar"), new File("/tmp"));
     }
 }

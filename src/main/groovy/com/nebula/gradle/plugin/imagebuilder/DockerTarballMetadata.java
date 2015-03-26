@@ -5,13 +5,15 @@
  */
 package com.nebula.gradle.plugin.imagebuilder;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.List;
 
 /**
  *
  * @author chris
  */
-public class DockerJson {
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class DockerTarballMetadata {
     public static class ContainerConfig{
         public String Hostname;
         public String Domainname;
