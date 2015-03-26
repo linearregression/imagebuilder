@@ -221,7 +221,7 @@ public class DockerImageUnpacker {
         File tmpDir = Files.createTempDir();
         cephOperations.unpackAufsDockerImage(
                 new File("/home/chris/docker-image.tar"), 
-                new File("/tmp"),
+                tmpDir,
                 new File("/tmp/repositories-aufs"));
     }
 }
