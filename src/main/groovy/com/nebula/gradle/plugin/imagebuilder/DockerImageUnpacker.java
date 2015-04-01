@@ -22,9 +22,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.io.FileUtils;
-import org.apache.tools.tar.TarEntry;
-import org.apache.tools.tar.TarInputStream;
 import org.jgrapht.DirectedGraph;
 import org.jgrapht.alg.DijkstraShortestPath;
 import org.jgrapht.experimental.dag.DirectedAcyclicGraph;
@@ -85,8 +85,8 @@ public class DockerImageUnpacker {
     }
 
     private void unpackLayerEntry(
-            @Nonnull TarInputStream imageTarStream,
-            @Nonnull TarEntry imageTarEntry,
+            @Nonnull TarArchiveInputStream imageTarStream,
+            @Nonnull TarArchiveEntry imageTarEntry,
             @Nonnull File baseDirectory
     ) throws FileNotFoundException, IOException {
         File imageTarEntryFile = new File(baseDirectory, imageTarEntry.getName());
@@ -100,9 +100,9 @@ public class DockerImageUnpacker {
             Files.createParentDirs(imageTarEntryFile);
             Files.asByteSink(imageTarEntryFile).writeFrom(imageTarStream);
 
-            try (TarInputStream layerTarStream = new TarInputStream(new FileInputStream(imageTarEntryFile))) {
-                TarEntry layerTarEntry;
-                while ((layerTarEntry = layerTarStream.getNextEntry()) != null) {
+            try (TarArchiveInputStream layerTarStream = new TarArchiveInputStream(new FileInputStream(imageTarEntryFile))) {
+                TarArchiveEntry layerTarEntry;
+                while ((layerTarEntry = layerTarStream.getNextTarEntry()) != null) {
                     if ("./".equals(layerTarEntry.getName()))
                         continue;
 
@@ -137,9 +137,9 @@ public class DockerImageUnpacker {
         String treeRoot = null;
 
         try (FileInputStream in = FileUtils.openInputStream(srcFile)) {
-            TarInputStream imageTarStream = new TarInputStream(new BufferedInputStream(in));
-            TarEntry imageTarEntry;
-            while ((imageTarEntry = imageTarStream.getNextEntry()) != null) {
+            TarArchiveInputStream imageTarStream = new TarArchiveInputStream(new BufferedInputStream(in));
+            TarArchiveEntry imageTarEntry;
+            while ((imageTarEntry = imageTarStream.getNextTarEntry()) != null) {
                 /*
                  117ee323aaa9d1b136ea55e4421f4ce413dfc6c0cc6b2186dea6c88d93e1ad7c/VERSION
                  117ee323aaa9d1b136ea55e4421f4ce413dfc6c0cc6b2186dea6c88d93e1ad7c/json
